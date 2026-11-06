@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact - formconfirmed frontend snippet</title>
+
+  <!-- 1. The widget script. No cookies, nothing stored on the device. -->
+  <script src="https://formconfirmed.com/v1/widget.js" async defer></script>
+</head>
+<body>
+  <h1>Contact</h1>
+
+  <!-- 2a. A normal form: the widget adds the hidden fields fcp-response (token) and
+       fcp-website (trap field) and fills the token before the form is sent. -->
+  <form method="post" action="/contact">
+    <label>Name <input name="name" maxlength="60" required></label>
+    <label>E-mail <input type="email" name="email" maxlength="80" required></label>
+    <label>Message <textarea name="message" rows="6" maxlength="5000" required></textarea></label>
+
+    <!-- Replace the site key with your own. data-purpose must match expected_purpose on your server. -->
+    <div class="fcp-widget" data-sitekey="fcp_pub_REPLACE_ME" data-purpose="contact"></div>
+
+    <button type="submit">Send</button>
+  </form>
+
+  <!-- 2b. A form sent with JavaScript: get the token first, then send it as fcp-response. -->
+  <form id="ajax-form" method="post" action="/contact">
+    <label>Name <input name="name" maxlength="60" required></label>
+    <label>E-mail <input type="email" name="email" maxlength="80" required></label>
+    <label>Message <textarea name="message" rows="6" maxlength="5000" required></textarea></label>
+    <div class="fcp-widget" data-sitekey="fcp_pub_REPLACE_ME" data-purpose="contact"></div>
+    <button type="submit">Send</button>
+    <p id="ajax-status" role="status"></p>
+  </form>
+  <script>
+    document.getElementById('ajax-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const status = document.getElementById('ajax-status');
+      const data = new FormData(form);
+      // Waits until the proof of work is done. If the widget could not reach the service, the
+      // token says so - your server must then treat it as "no clear answer", never as a pass.
+      data.set('fcp-response', window.__fcpWidget ? await window.__fcpWidget.token(form, 'contact') : '');
+      const res = await fetch(form.action, { method: 'POST', body: new URLSearchParams(data) });
+      status.textContent = res.ok ? 'Thank you.' : 'Your message could not be sent. Please try again.';
+    });
+  </script>
+</body>
+</html>
