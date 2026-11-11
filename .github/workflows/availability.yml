@@ -12,11 +12,10 @@ on:
           - dev
         default: prod
   schedule:
-    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '3,13,23,33,43,53 * * * *'
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: formconfirmed-availability
@@ -40,9 +39,5 @@ jobs:
           FC_MONITOR_BASE_URL: ${{ inputs.environment == 'dev' && 'https://dev.formconfirmed.com' || 'https://formconfirmed.com' }}
           FC_MONITOR_SECRET: ${{ inputs.environment == 'dev' && secrets.FC_MONITOR_SECRET_DEV || secrets.FC_MONITOR_SECRET }}
         run: node .github/scripts/availability.cjs
-      - name: Record failures and recovery
-        if: always() && inputs.environment != 'dev' && (steps.check.outcome == 'success' || steps.check.outcome == 'failure')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHECK_OUTCOME: ${{ steps.check.outcome }}
-        run: node .github/scripts/availability-incident.cjs
+      # Incident alerts are recorded by the Pi watchdog in Admin -> Urgent Logs.
+      # Do not create issues or send email notifications from this monitor.
