@@ -1,7 +1,10 @@
 name: formconfirmed availability
-run-name: ${{ inputs.environment == 'dev' && 'Development availability' || 'Production availability' }}
+run-name: ${{ (inputs.environment == 'dev' || github.ref == 'refs/heads/formconfirmed-monitor-dev') && 'Development availability' || 'Production availability' }}
 
 on:
+  push:
+    branches: [formconfirmed-monitor-prod, formconfirmed-monitor-dev]
+    paths: ['.monitor/pulse']
   workflow_dispatch:
     inputs:
       environment:
@@ -36,8 +39,8 @@ jobs:
       - name: Check the public widget, API and AI
         id: check
         env:
-          FC_MONITOR_BASE_URL: ${{ inputs.environment == 'dev' && 'https://dev.formconfirmed.com' || 'https://formconfirmed.com' }}
-          FC_MONITOR_SECRET: ${{ inputs.environment == 'dev' && secrets.FC_MONITOR_SECRET_DEV || secrets.FC_MONITOR_SECRET }}
+          FC_MONITOR_BASE_URL: ${{ (inputs.environment == 'dev' || github.ref == 'refs/heads/formconfirmed-monitor-dev') && 'https://dev.formconfirmed.com' || 'https://formconfirmed.com' }}
+          FC_MONITOR_SECRET: ${{ (inputs.environment == 'dev' || github.ref == 'refs/heads/formconfirmed-monitor-dev') && secrets.FC_MONITOR_SECRET_DEV || secrets.FC_MONITOR_SECRET }}
         run: node .github/scripts/availability.cjs
       # Incident alerts are recorded by the Pi watchdog in Admin -> Urgent Logs.
       # Do not create issues or send email notifications from this monitor.
