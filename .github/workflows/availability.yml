@@ -1,0 +1,48 @@
+name: formconfirmed availability
+run-name: ${{ inputs.environment == 'dev' && 'Development availability' || 'Production availability' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to verify
+        type: choice
+        options:
+          - prod
+          - dev
+        default: prod
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: formconfirmed-availability
+  cancel-in-progress: false
+
+jobs:
+  availability:
+    if: github.event_name == 'workflow_dispatch' || vars.FC_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Check the public widget, API and AI
+        id: check
+        env:
+          FC_MONITOR_BASE_URL: ${{ inputs.environment == 'dev' && 'https://dev.formconfirmed.com' || 'https://formconfirmed.com' }}
+          FC_MONITOR_SECRET: ${{ inputs.environment == 'dev' && secrets.FC_MONITOR_SECRET_DEV || secrets.FC_MONITOR_SECRET }}
+        run: node .github/scripts/availability.cjs
+      - name: Record failures and recovery
+        if: always() && inputs.environment != 'dev' && (steps.check.outcome == 'success' || steps.check.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        run: node .github/scripts/availability-incident.cjs
