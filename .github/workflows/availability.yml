@@ -36,6 +36,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+      - name: Test bounded retries and safe diagnostics
+        run: node --test .github/tests/monitor-http.test.cjs
       - name: Check the public widget, API and AI
         id: check
         env:
@@ -44,3 +46,4 @@ jobs:
         run: node .github/scripts/availability.cjs
       # Incident alerts are recorded by the Pi watchdog in Admin -> Urgent Logs.
       # Do not create issues or send email notifications from this monitor.
+      # Native GitHub Actions email preferences are controlled separately by the account owner.

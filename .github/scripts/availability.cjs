@@ -2,6 +2,9 @@ const {spawn} = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const {ProbeError, requestJson} = require("./monitor-http.cjs");
+let stage = "health";
+let browserFailed = false;
 
 const base = process.env.FC_MONITOR_BASE_URL || "https://formconfirmed.com";
 if (!["https://formconfirmed.com", "https://dev.formconfirmed.com"].includes(base)) process.exit(2);
@@ -15,6 +18,7 @@ const chrome = spawn(process.env.FC_CHROME || "/usr/bin/google-chrome",
   ["--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
    "--disable-background-networking", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"],
   {stdio: "ignore"});
+chrome.on("error", () => { browserFailed = true; });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let socket, session, sequence = 0;
 const pending = new Map();
@@ -30,6 +34,7 @@ function call(method, params = {}, attached = true) {
 async function until(fn) {
   const end = Date.now() + 30000;
   while (Date.now() < end) {
+    if (browserFailed) throw new ProbeError("browser_start");
     if (await fn()) return;
     await pause(200);
   }
@@ -41,23 +46,19 @@ async function evaluate(expression) {
   return result.result.value;
 }
 async function jsonRequest(url, body) {
-  const response = await fetch(url, {
-    redirect: "error", signal: AbortSignal.timeout(25000),
-    ...(body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {}),
-  });
-  if (response.status !== 200) throw Error("unexpected service status");
-  const text = await response.text();
-  if (text.length > 16000) throw Error("oversized service response");
-  return JSON.parse(text);
+  return requestJson(url, body, {onRetry: (code, attempt) => {
+    console.warn("RETRY stage=" + stage + " code=" + code + " attempt=" + attempt);
+  }});
 }
 function passed(label, condition) {
-  if (!condition) throw Error(label);
+  if (!condition) throw new ProbeError("check_failed");
   checks.push(label);
   console.log("PASS " + label);
 }
 (async () => {
   const health = await jsonRequest(base + "/v1/health");
   passed("API health", health.status === "ok");
+  stage = "browser_start";
   await until(() => fs.existsSync(path.join(profile, "DevToolsActivePort")));
   const [port, endpoint] = fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n");
   socket = new WebSocket("ws://127.0.0.1:" + port + endpoint);
@@ -74,6 +75,7 @@ function passed(label, condition) {
   session = (await call("Target.attachToTarget", {targetId: target.targetId, flatten: true}, false)).sessionId;
   await call("Page.enable");
   await call("Runtime.enable");
+  stage = "widget";
   await call("Page.navigate", {url: base + "/v1/monitor"});
   await until(() => evaluate("document.readyState === 'complete' && !!document.querySelector('#availability-form') && !!window.__fcpWidget"));
   passed("Public widget loads", true);
@@ -81,6 +83,7 @@ function passed(label, condition) {
     ["AI evaluates normal content", "Guten Tag, haben Sie nächste Woche einen Termin frei?", "ok", "ai"],
     ["Rules reject link spam", "https://offers.example https://promotion.example https://discount.example https://links.example", "links_massen", "rules"],
   ]) {
+    stage = source === "ai" ? "ai_content" : "link_rules";
     const token = await evaluate("window.__fcpWidget.token(document.querySelector('#availability-form'))");
     if (typeof token !== "string" || token.length > 12000) throw Error("invalid widget token");
     // The private verification key is used only by this server process, never by the browser.
@@ -91,14 +94,17 @@ function passed(label, condition) {
     // An automated availability browser can carry automation/IP signals. Its synthetic traffic is never evidence for a normal human's allow decision.
   }
   passed("Availability check complete", checks.length === 4);
-})().catch(() => {
+})().catch(error => {
   // Provider bodies, tokens, credentials and exception text never enter public workflow logs.
-  console.error("FAIL external availability check. Inspect the service and rerun the workflow.");
+  console.error("FAIL stage=" + stage + " code=" + (error instanceof ProbeError ? error.code : "probe_error"));
   process.exitCode = 1;
 }).finally(async () => {
   if (socket && socket.readyState === WebSocket.OPEN) await Promise.race([call("Browser.close", {}, false).catch(() => {}), pause(1000)]);
   if (socket) socket.close();
   if (chrome.exitCode === null) chrome.kill();
   await pause(500);
-  fs.rmSync(profile, {recursive: true, force: true});
+  try { fs.rmSync(profile, {recursive: true, force: true}); } catch {
+    console.error("FAIL stage=cleanup code=profile_cleanup");
+    process.exitCode = 1;
+  }
 });
