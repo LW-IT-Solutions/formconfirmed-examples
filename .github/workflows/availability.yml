@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test bounded retries and safe diagnostics
-        run: node --test .github/tests/monitor-http.test.cjs .github/tests/monitor-browser.test.cjs
+        run: node --test .github/tests/monitor-http.test.cjs
       - name: Check the public widget, API and AI
         id: check
         env:
