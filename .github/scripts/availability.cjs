@@ -1,10 +1,6 @@
-const {spawn} = require("node:child_process");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
 const {ProbeError, requestJson} = require("./monitor-http.cjs");
+const {startBrowser, stopBrowser} = require("./monitor-browser.cjs");
 let stage = "health";
-let browserFailed = false;
 
 const base = process.env.FC_MONITOR_BASE_URL || "https://formconfirmed.com";
 if (!["https://formconfirmed.com", "https://dev.formconfirmed.com"].includes(base)) process.exit(2);
@@ -13,14 +9,8 @@ if (!secret || !/^fcp_sec_[A-Za-z0-9_-]{32}$/.test(secret)) {
   console.error("Monitor credential is missing or invalid.");
   process.exit(2);
 }
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), "fc-availability-"));
-const chrome = spawn(process.env.FC_CHROME || "/usr/bin/google-chrome",
-  ["--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-   "--disable-background-networking", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"],
-  {stdio: "ignore"});
-chrome.on("error", () => { browserFailed = true; });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let socket, session, sequence = 0;
+let browser, socket, session, sequence = 0;
 const pending = new Map();
 const checks = [];
 function call(method, params = {}, attached = true) {
@@ -34,7 +24,7 @@ function call(method, params = {}, attached = true) {
 async function until(fn) {
   const end = Date.now() + 30000;
   while (Date.now() < end) {
-    if (browserFailed) throw new ProbeError("browser_start");
+    if (browser.failed()) throw new ProbeError("browser_exit");
     if (await fn()) return;
     await pause(200);
   }
@@ -59,10 +49,10 @@ function passed(label, condition) {
   const health = await jsonRequest(base + "/v1/health");
   passed("API health", health.status === "ok");
   stage = "browser_start";
-  await until(() => fs.existsSync(path.join(profile, "DevToolsActivePort")));
-  const [port, endpoint] = fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n");
-  socket = new WebSocket("ws://127.0.0.1:" + port + endpoint);
-  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(Error("browser connection")); });
+  // A runner-local browser start failure is retried once with a fresh profile; formconfirmed checks are not.
+  browser = await startBrowser({executable: process.env.FC_CHROME || "/usr/bin/google-chrome",
+    onRetry: (code, attempt) => console.warn("RETRY stage=" + stage + " code=" + code + " attempt=" + attempt)});
+  socket = browser.socket;
   socket.onmessage = event => {
     const data = JSON.parse(event.data);
     const request = pending.get(data.id);
@@ -100,10 +90,8 @@ function passed(label, condition) {
   process.exitCode = 1;
 }).finally(async () => {
   if (socket && socket.readyState === WebSocket.OPEN) await Promise.race([call("Browser.close", {}, false).catch(() => {}), pause(1000)]);
-  if (socket) socket.close();
-  if (chrome.exitCode === null) chrome.kill();
-  await pause(500);
-  try { fs.rmSync(profile, {recursive: true, force: true}); } catch {
+  // Waits for the browser to exit before removing its profile.
+  if (!(await stopBrowser(browser))) {
     console.error("FAIL stage=cleanup code=profile_cleanup");
     process.exitCode = 1;
   }
