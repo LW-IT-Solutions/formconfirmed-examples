@@ -128,6 +128,50 @@ test("a browser that ignores SIGTERM is force-stopped before its profile is remo
   assert.deepEqual(f.leftovers(), []);
 });
 
+function busyRemover(failures) {
+  const calls = [];
+  const rm = (target, options) => {
+    calls.push(options);
+    if (calls.length <= failures) throw Object.assign(new Error("SYNTHETIC_PRIVATE_SENTINEL"), {code: "ENOTEMPTY"});
+    fs.rmSync(target, options);
+  };
+  return {rm, calls};
+}
+
+test("profile removal waits for lingering Chrome helpers on its own clock", async () => {
+  const f = setup(["ready"]);
+  const browser = await startBrowser(f.options);
+  const busy = busyRemover(2);
+  const started = Date.now();
+  assert.equal(await stopBrowser(browser, {graceMs: 50, rm: busy.rm}), true);
+  assert.equal(busy.calls.length, 3);
+  assert.ok(Date.now() - started >= 450, "waits between removal attempts");
+  assert.ok(busy.calls.every(options => options.maxRetries === undefined), "does not rely on rmSync retries");
+  assert.deepEqual(f.leftovers(), []);
+});
+
+test("a profile that stays busy fails cleanup after the deadline", async () => {
+  const f = setup(["ready"]);
+  const browser = await startBrowser(f.options);
+  const busy = busyRemover(Infinity);
+  const started = Date.now();
+  assert.equal(await stopBrowser(browser, {graceMs: 50, rm: busy.rm, cleanupMs: 600}), false);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 600 && elapsed < 3000);
+  assert.ok(busy.calls.length >= 3);
+  fs.rmSync(f.tmpdir, {recursive: true, force: true});
+});
+
+test("a failed start whose profile cannot be removed is not hidden by a second start", async () => {
+  const f = setup(["never", "ready"]);
+  const busy = busyRemover(Infinity);
+  await assert.rejects(startBrowser({...f.options, rm: busy.rm, cleanupMs: 300}),
+    error => error instanceof ProbeError && error.code === "profile_cleanup" && !error.message.includes("PRIVATE"));
+  assert.equal(f.spawned.length, 1);
+  assert.deepEqual(f.retries, []);
+  fs.rmSync(f.tmpdir, {recursive: true, force: true});
+});
+
 test("only a numeric port and a DevTools browser path are accepted", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fc-browser-port-"));
   const file = path.join(dir, "DevToolsActivePort");

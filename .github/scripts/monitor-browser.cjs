@@ -48,11 +48,17 @@ async function stopProcess(child, wait, graceMs) {
   await Promise.race([exited, wait(1000)]);
 }
 
-function removeProfile(profile) {
+async function removeProfile(profile, o) {
   if (!profile) return true;
-  // Chrome may still flush files right after exit; retry briefly instead of failing the run.
-  try { fs.rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 200}); return true; }
-  catch { return false; }
+  // Chrome helper processes keep writing for about 100 ms after the main process exits, so an
+  // immediate removal fails with ENOTEMPTY. Retry on our own clock: rmSync's retry options proved
+  // ineffective on the runner's Node 22.
+  const end = Date.now() + o.cleanupMs;
+  while (true) {
+    try { o.rm(profile, {recursive: true, force: true}); return true; }
+    catch { if (Date.now() >= end) return false; }
+    await o.wait(250);
+  }
 }
 
 async function launchOnce(o) {
@@ -77,20 +83,23 @@ async function launchOnce(o) {
   } catch (error) {
     if (socket) try { socket.close(); } catch {}
     await stopProcess(child, o.wait, o.graceMs);
-    removeProfile(profile);
+    if (!(await removeProfile(profile, o))) throw new ProbeError("profile_cleanup");
     throw error instanceof ProbeError ? error : new ProbeError("browser_start");
   }
 }
 
+const DEFAULTS = {executable: "/usr/bin/google-chrome", spawnImpl: spawn, connect: connectSocket, wait: pause,
+  rm: fs.rmSync, tmpdir: os.tmpdir(), readyMs: 30000, connectMs: 10000, graceMs: 5000, cleanupMs: 10000,
+  retryDelayMs: 1000, attempts: 2, onRetry: () => {}};
+
 async function startBrowser(options = {}) {
-  const o = {executable: "/usr/bin/google-chrome", spawnImpl: spawn, connect: connectSocket, wait: pause,
-    tmpdir: os.tmpdir(), readyMs: 30000, connectMs: 10000, graceMs: 5000, retryDelayMs: 1000,
-    attempts: 2, onRetry: () => {}, ...options};
+  const o = {...DEFAULTS, ...options};
   for (let attempt = 1; ; attempt++) {
     try { return await launchOnce(o); }
     catch (error) {
       const code = error instanceof ProbeError ? error.code : "browser_start";
-      if (attempt >= o.attempts) throw new ProbeError(code);
+      // A profile that cannot be removed is not hidden by a second start.
+      if (attempt >= o.attempts || code === "profile_cleanup") throw new ProbeError(code);
       o.onRetry(code, attempt);
       await o.wait(o.retryDelayMs);
     }
@@ -99,9 +108,10 @@ async function startBrowser(options = {}) {
 
 async function stopBrowser(browser, options = {}) {
   if (!browser) return true;
+  const o = {...DEFAULTS, ...options};
   if (browser.socket) try { browser.socket.close(); } catch {}
-  await stopProcess(browser.child, options.wait || pause, options.graceMs ?? 5000);
-  return removeProfile(browser.profile);
+  await stopProcess(browser.child, o.wait, o.graceMs);
+  return removeProfile(browser.profile, o);
 }
 
 module.exports = {CHROME_ARGS, readEndpoint, startBrowser, stopBrowser};
